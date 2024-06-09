@@ -27,6 +27,7 @@ public class RandomReverser {
     protected final LCG lcg;
     protected final ArrayList<BigInteger> mins;
     protected final ArrayList<BigInteger> maxes;
+    protected final ArrayList<BigInteger> offsetOverrides;
     protected final ArrayList<Long> callIndices;
     protected final List<FilteredSkip> filteredSkips;
     protected BigMatrix lattice;
@@ -49,6 +50,7 @@ public class RandomReverser {
         this.dimensions = 0;
         this.mins = new ArrayList<>();
         this.maxes = new ArrayList<>();
+        this.offsetOverrides = new ArrayList<>();
         this.callIndices = new ArrayList<>();
         this.currentCallIndex = 0;
         this.successChance = 1.0;
@@ -70,7 +72,7 @@ public class RandomReverser {
         for (int i = 0; i < dimensions; i++) {
             lower.set(i, new BigFraction(mins.get(i)));
             upper.set(i, new BigFraction(maxes.get(i)));
-            offset.set(i, new BigFraction(rand.getSeed()));
+            offset.set(i, offsetOverrides.get(i) != null ? new BigFraction(offsetOverrides.get(i)) : new BigFraction(rand.getSeed()));
 
             if (i != dimensions - 1) {
                 rand.advance(callIndices.get(i + 1) - callIndices.get(i));
@@ -165,6 +167,7 @@ public class RandomReverser {
         //callIndices.set(dimensions, callIndices.get(dimensions)+1);
         mins.add(min);
         maxes.add(max);
+        offsetOverrides.add(null);
         dimensions += 1;
         currentCallIndex += 1;
         callIndices.add(currentCallIndex);
@@ -178,6 +181,155 @@ public class RandomReverser {
         newLattice.set(0, dimensions - 1, new BigFraction(tempMult));
         newLattice.set(dimensions, dimensions - 1, new BigFraction(MOD));
         lattice = newLattice;
+    }
+
+    public void addMeasuredSeedCustom(long min, long max, long multiplier, long addend) {
+        addMeasuredSeedCustom(BigInteger.valueOf(min), BigInteger.valueOf(max), BigInteger.valueOf(multiplier), BigInteger.valueOf(addend));
+    }
+
+    public void addMeasuredSeedCustom(BigInteger min, BigInteger max, BigInteger multiplier, BigInteger addend) {
+        if (dimensions == 0 && !MOD.gcd(multiplier).equals(BigInteger.ONE)) {
+            addMeasuredSeedCustom(BigInteger.ZERO, MOD.subtract(BigInteger.ONE), BigInteger.ONE, BigInteger.ZERO);
+        }
+
+        min = min.mod(MOD);
+        max = max.mod(MOD);
+        if (max.compareTo(min) < 0) {
+            max = max.add(MOD);
+        }
+        callIndices.add(0L);
+        mins.add(min);
+        maxes.add(max);
+        LCG baseLcg = lcg.combine(callIndices.get(callIndices.size() - 1) - callIndices.get(0));
+        offsetOverrides.add(BigInteger.valueOf(baseLcg.addend).multiply(multiplier).add(addend).mod(MOD));
+        dimensions += 1;
+        BigMatrix newLattice = new BigMatrix(dimensions + 1, dimensions);
+        if (dimensions != 1) {
+            for (int row = 0; row < dimensions; row++)
+                for (int col = 0; col < dimensions - 1; col++)
+                    newLattice.set(row, col, lattice.get(row, col));
+        }
+        newLattice.set(0, dimensions - 1, new BigFraction(BigInteger.valueOf(baseLcg.multiplier).multiply(multiplier).mod(MOD)));
+        newLattice.set(dimensions, dimensions - 1, new BigFraction(MOD));
+        lattice = newLattice;
+    }
+
+    public void addMeasuredSeedLinearCombination(long min, long max, long[] skips, long[] mults, boolean addAdditionalDimensions, boolean addFilter) {
+        BigInteger[] multsBig = new BigInteger[mults.length];
+        for (int i = 0; i < mults.length; i++) {
+            multsBig[i] = BigInteger.valueOf(mults[i]);
+        }
+        addMeasuredSeedLinearCombination(BigInteger.valueOf(min), BigInteger.valueOf(max), skips, multsBig, addAdditionalDimensions, addFilter);
+    }
+
+    public void addMeasuredSeedLinearCombination(BigInteger min, BigInteger max, long[] skips, BigInteger[] mults, boolean addAdditionalDimensions, boolean addFilter) {
+        if (skips.length != mults.length) {
+            throw new RuntimeException("skips.length != mults.length");
+        }
+
+        BigInteger combinationMultSumNeg = BigInteger.ZERO;
+        BigInteger combinationMultSumPos = BigInteger.ZERO;
+        for (int i = 0; i < mults.length; i++) {
+            if (mults[i].compareTo(BigInteger.ZERO) < 0) {
+                combinationMultSumNeg = combinationMultSumNeg.add(mults[i]);
+            } else {
+                combinationMultSumPos = combinationMultSumPos.add(mults[i]);
+            }
+        }
+
+        BigInteger modSub1 = MOD.subtract(BigInteger.ONE);
+        BigInteger combinationMin = combinationMultSumNeg.multiply(modSub1);
+        BigInteger combinationMax = combinationMultSumPos.multiply(modSub1);
+
+        min = min.max(combinationMin);
+        max = max.min(combinationMax);
+
+        if (max.compareTo(min) < 0) {
+            System.err.println("Empty range, ignoring restriction");
+            return;
+        }
+
+        if (max.subtract(min).compareTo(modSub1) < 0) {
+            BigInteger combinationModMin = min.mod(MOD);
+            BigInteger combinationModMax = max.mod(MOD);
+            if (combinationModMax.compareTo(combinationModMin) < 0) {
+                combinationModMax = combinationModMax.add(MOD);
+            }
+
+            BigInteger combinationModMultiplier = BigInteger.ZERO;
+            BigInteger combinationModAddend = BigInteger.ZERO;
+            for (int i = 0; i < skips.length; i++) {
+                long skip = skips[i];
+                BigInteger mult = mults[i];
+
+                LCG combinedLcg = lcg.combine(currentCallIndex + skip);
+                combinationModMultiplier = combinationModMultiplier.add(BigInteger.valueOf(combinedLcg.multiplier).multiply(mult));
+                combinationModAddend = combinationModAddend.add(BigInteger.valueOf(combinedLcg.addend).multiply(mult));
+            }
+            combinationModMultiplier = combinationModMultiplier.mod(MOD);
+            combinationModAddend = combinationModAddend.mod(MOD);
+
+            addMeasuredSeedCustom(combinationModMin, combinationModMax, combinationModMultiplier, combinationModAddend);
+        }
+
+        if (addAdditionalDimensions) {
+            for (int i = 0; i < skips.length; i++) {
+                long skip = skips[i];
+                BigInteger mult = mults[i];
+
+                if (mult.signum() == 0) {
+                    continue;
+                }
+                BigInteger multSub1 = mult.subtract(BigInteger.ONE);
+
+                BigInteger combinationMultSumNegRest = mult.signum() == -1 ? combinationMultSumNeg.subtract(mult) : combinationMultSumNeg;
+                BigInteger combinationMultSumPosRest = mult.signum() == 1 ? combinationMultSumPos.subtract(mult) : combinationMultSumPos;
+
+                BigInteger combinationMinRest = combinationMultSumNegRest.multiply(modSub1);
+                BigInteger combinationMaxRest = combinationMultSumPosRest.multiply(modSub1);
+
+                BigInteger minSeed = (mult.signum() == 1 ? min.subtract(combinationMaxRest).max(BigInteger.ZERO).add(multSub1).divide(mult) : max.subtract(combinationMinRest).min(BigInteger.ZERO).subtract(multSub1).divide(mult)).max(BigInteger.ZERO);
+                BigInteger maxSeed = (mult.signum() == 1 ? max.subtract(combinationMinRest).max(BigInteger.ZERO).divide(mult) : min.subtract(combinationMaxRest).min(BigInteger.ZERO).divide(mult)).min(modSub1);
+
+                if (maxSeed.subtract(minSeed).compareTo(modSub1) < 0) {
+                    addUnmeasuredSeeds(skip - 1);
+                    addMeasuredSeed(minSeed, maxSeed);
+                    addUnmeasuredSeeds(-skip);
+                }
+            }
+        }
+
+        if (addFilter) {
+            if (combinationMin.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) >= 0 && combinationMax.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) <= 0) {
+                long minLong = min.longValue();
+                long maxLong = max.longValue();
+                long[] multsLong = new long[mults.length];
+                for (int i = 0; i < mults.length; i++) {
+                    multsLong[i] = mults[i].longValue();
+                }
+                this.filteredSkips.add(new FilteredSkip(currentCallIndex, (rand) -> {
+                    long sum = 0;
+                    for (int i = 0; i < skips.length; i++) {
+                        Rand r = Rand.copyOf(rand);
+                        r.advance(skips[i]);
+                        sum += r.getSeed() * multsLong[i];
+                    }
+                    return sum >= minLong && sum <= maxLong;
+                }));
+            } else {
+                BigInteger minBig = min;
+                BigInteger maxBig = max;
+                this.filteredSkips.add(new FilteredSkip(currentCallIndex, (rand) -> {
+                    BigInteger sum = BigInteger.ZERO;
+                    for (int i = 0; i < skips.length; i++) {
+                        Rand r = Rand.copyOf(rand);
+                        r.advance(skips[i]);
+                        sum = sum.add(BigInteger.valueOf(r.getSeed()).multiply(mults[i]));
+                    }
+                    return sum.compareTo(minBig) >= 0 && sum.compareTo(maxBig) <= 0;
+                }));
+            }
+        }
     }
 
     public void addModuloMeasuredSeed(long min, long max, long mod) {
@@ -198,11 +350,13 @@ public class RandomReverser {
             //First condition - is the seed real. This conveys more info than it seems since the normal mod vector is not present.
             mins.add(BigInteger.ZERO);
             maxes.add(MOD.subtract(residue)); // in the case the seed is > MOD - residue, the do while in java's nextInt will trigger. In general seeds larger than this are unsupported behavior
+            offsetOverrides.add(null);
             currentCallIndex += 1;
             callIndices.add(currentCallIndex);
             //Second condition - does the seed have a number within the bounds in its residue class.
             mins.add(min);
             maxes.add(max);
+            offsetOverrides.add(null);
             callIndices.add(currentCallIndex); //We don't increment the call index here because this is really 2 conditions on the same seed
 
             dimensions += 2; //We added 2 conditions
@@ -234,6 +388,7 @@ public class RandomReverser {
             // may force upper bits
             mins.add(min);
             maxes.add(max);
+            offsetOverrides.add(null);
             dimensions += 1;
             currentCallIndex += 1;
             callIndices.add(currentCallIndex);

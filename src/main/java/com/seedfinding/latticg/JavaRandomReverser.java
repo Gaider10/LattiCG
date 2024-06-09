@@ -1,23 +1,10 @@
 package com.seedfinding.latticg;
 
-import com.seedfinding.latticg.math.component.BigFraction;
-import com.seedfinding.latticg.math.component.BigMatrix;
-import com.seedfinding.latticg.math.component.BigMatrixUtil;
-import com.seedfinding.latticg.math.component.BigVector;
-import com.seedfinding.latticg.math.lattice.LLL.LLL;
-import com.seedfinding.latticg.math.lattice.LLL.Params;
-import com.seedfinding.latticg.math.lattice.LLL.Result;
-import com.seedfinding.latticg.math.lattice.enumeration.Enumerate;
 import com.seedfinding.latticg.reversal.calltype.FilteredSkip;
 import com.seedfinding.latticg.util.LCG;
-import com.seedfinding.latticg.util.Mth;
-import com.seedfinding.latticg.util.Rand;
 import org.jetbrains.annotations.ApiStatus;
 
-import java.math.BigInteger;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.LongStream;
 
 @ApiStatus.Internal
 public class JavaRandomReverser extends RandomReverser{
@@ -124,6 +111,46 @@ public class JavaRandomReverser extends RandomReverser{
 
     public void consumeNextFloatCalls(int numCalls) {
         addUnmeasuredSeeds(numCalls);
+    }
+
+    public void addNextFloatDifferenceCalls(float min, float max, boolean minInclusive, boolean maxInclusive, boolean addAdditionalDimensions) {
+        // I think these constraints are unremoveable due to float precision worries.
+        if (min < -1.0f || max < -1.0f || min > 1.0f || max > 1.0f || min > max) {
+            throw new IllegalArgumentException(String.format("Bounds should have -1 <= min <= max <= 1 but were min: %f " +
+                "max: %f with min included : %s and max included %s", min, max, minInclusive, maxInclusive));
+        }
+        float minInc = min;
+        float maxExc = max;
+
+        if (!minInclusive) {
+            minInc = Math.nextUp(min);
+        }
+
+        if (maxInclusive) {
+            maxExc = Math.nextUp(max);
+        }
+
+        // inclusive
+        long minLong = (long) StrictMath.ceil(minInc * 0x1.0p24f);
+        long maxLong = (long) StrictMath.ceil(maxExc * 0x1.0p24f) - 1;
+
+         if (maxLong < minLong) {
+             throw new IllegalArgumentException("call has no valid range");
+         }
+
+        long minSeedDiff = (minLong << 24) - 0xffffff;
+        long maxSeedDiff = (maxLong << 24) + 0xffffff;
+
+        addMeasuredSeedLinearCombination(minSeedDiff, maxSeedDiff, new long[]{ 1, 2 }, new long[]{ 1, -1 }, addAdditionalDimensions, false);
+        this.filteredSkips.add(new FilteredSkip(this.currentCallIndex, (rand) -> {
+            float val = rand.nextFloat() - rand.nextFloat();
+            return val >= min && val <= max;
+        }));
+        addUnmeasuredSeeds(2);
+    }
+
+    public void addNextFloatDifferenceCalls(float min, float max) {
+        addNextFloatDifferenceCalls(min, max, true, false, false);
     }
 
     public void addNextLongCall(long min, long max) {
